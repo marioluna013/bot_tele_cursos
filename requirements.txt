@@ -4,3 +4,4 @@ feedparser
 python-dotenv
 langdetect
 flask
+psycopg2-binary
