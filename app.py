@@ -1,6 +1,5 @@
 import os
 import time
-import sqlite3
 import feedparser
 import requests
 import re
@@ -10,12 +9,15 @@ from dotenv import load_dotenv
 from langdetect import detect, DetectorFactory
 from flask import Flask
 import threading
+import psycopg2  # Conector para PostgreSQL
 
 # ================= CONFIGURACIÓN =================
 DetectorFactory.seed = 0  # Para resultados consistentes
 load_dotenv()
 TOKEN_TELEGRAM = os.getenv("TELEGRAM_TOKEN")
 ID_CANAL = os.getenv("TELEGRAM_CHANNEL_ID")
+# Render inyecta esta variable automáticamente tras ponerla en el panel
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Fuentes RSS (incluyendo Reddit)
 FUENTES_RSS = [
@@ -52,21 +54,27 @@ def es_espanol(texto):
     except:
         return False
 
-# ================= BASE DE DATOS =================
+# ================= BASE DE DATOS (POSTGRESQL) =================
 def iniciar_base_datos():
-    conexion = sqlite3.connect("bot_cursos.db")
-    cursor = conexion.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS cursos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url_original TEXT UNIQUE,
-            titulo TEXT,
-            plataforma TEXT,
-            fecha_publicacion TEXT
-        )
-    ''')
-    conexion.commit()
-    conexion.close()
+    """Crea la tabla en PostgreSQL si no existe"""
+    try:
+        conexion = psycopg2.connect(DATABASE_URL)
+        cursor = conexion.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cursos (
+                id SERIAL PRIMARY KEY,
+                url_original TEXT UNIQUE,
+                titulo TEXT,
+                plataforma TEXT,
+                fecha_publicacion TEXT
+            )
+        ''')
+        conexion.commit()
+        cursor.close()
+        conexion.close()
+        print("📊 Base de datos PostgreSQL verificada/iniciada correctamente.")
+    except Exception as e:
+        print(f"❌ Error al iniciar la base de datos PostgreSQL: {e}")
 
 # ================= ENVIAR A TELEGRAM =================
 def enviar_a_telegram(texto):
@@ -419,7 +427,7 @@ def scraping_cursosdev():
 # ================= LÓGICA PRINCIPAL =================
 def revisar_y_publicar():
     iniciar_base_datos()
-    conexion = sqlite3.connect("bot_cursos.db")
+    conexion = psycopg2.connect(DATABASE_URL)
     cursor = conexion.cursor()
     
     # ----- 1. RSS FACIALIX Y REDDIT -----
@@ -448,13 +456,12 @@ def revisar_y_publicar():
             titulo_raw = entrada.title if hasattr(entrada, 'title') else "Curso sin título"
             titulo = limpiar_html(titulo_raw)
             
-            # FILTRO DE IDIOMA: Solo para Reddit
             if 'reddit.com' in url_feed:
                 if not es_espanol(titulo):
                     print(f"⏩ Curso omitido (no es español): {titulo[:40]}...")
                     continue
             
-            cursor.execute("SELECT * FROM cursos WHERE url_original = ?", (url_articulo,))
+            cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (url_articulo,))
             if cursor.fetchone():
                 print(f"⏩ Duplicado (RSS): {titulo[:40]}...")
                 continue
@@ -464,7 +471,7 @@ def revisar_y_publicar():
             
             resultado = enviar_a_telegram(mensaje)
             if resultado and resultado.get("ok"):
-                cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (?, ?, ?, ?)",
+                cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
                                (url_articulo, titulo, "RSS", time.strftime("%Y-%m-%d %H:%M:%S")))
                 conexion.commit()
                 time.sleep(2)
@@ -472,7 +479,7 @@ def revisar_y_publicar():
     # ----- 2. CURSOTECA CUPONES -----
     print("\n🕷️ Scraping Cursoteca Cupones...")
     for curso in scraping_cursoteca_cupones():
-        cursor.execute("SELECT * FROM cursos WHERE url_original = ?", (curso['url'],))
+        cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (curso['url'],))
         if cursor.fetchone():
             print(f"⏩ Duplicado (Cursoteca Cupones): {curso['titulo'][:40]}...")
             continue
@@ -485,7 +492,7 @@ def revisar_y_publicar():
         
         resultado = enviar_a_telegram(mensaje)
         if resultado and resultado.get("ok"):
-            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (?, ?, ?, ?)",
+            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
                            (curso['url'], curso['titulo'], curso['plataforma'], time.strftime("%Y-%m-%d %H:%M:%S")))
             conexion.commit()
             time.sleep(2)
@@ -493,7 +500,7 @@ def revisar_y_publicar():
     # ----- 3. CURSOTECA BLOG -----
     print("\n🕷️ Scraping Cursoteca Blog...")
     for curso in scraping_cursoteca_blog():
-        cursor.execute("SELECT * FROM cursos WHERE url_original = ?", (curso['url'],))
+        cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (curso['url'],))
         if cursor.fetchone():
             print(f"⏩ Duplicado (Cursoteca Blog): {curso['titulo'][:40]}...")
             continue
@@ -506,7 +513,7 @@ def revisar_y_publicar():
         
         resultado = enviar_a_telegram(mensaje)
         if resultado and resultado.get("ok"):
-            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (?, ?, ?, ?)",
+            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
                            (curso['url'], curso['titulo'], curso['plataforma'], time.strftime("%Y-%m-%d %H:%M:%S")))
             conexion.commit()
             time.sleep(2)
@@ -514,7 +521,7 @@ def revisar_y_publicar():
     # ----- 4. CENTRO EDUCATIC -----
     print("\n🕷️ Scraping Centro Educatic...")
     for curso in scraping_centro_educatic():
-        cursor.execute("SELECT * FROM cursos WHERE url_original = ?", (curso['url'],))
+        cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (curso['url'],))
         if cursor.fetchone():
             print(f"⏩ Duplicado (Centro Educatic): {curso['titulo'][:40]}...")
             continue
@@ -527,7 +534,7 @@ def revisar_y_publicar():
         
         resultado = enviar_a_telegram(mensaje)
         if resultado and resultado.get("ok"):
-            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (?, ?, ?, ?)",
+            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
                            (curso['url'], curso['titulo'], curso['plataforma'], time.strftime("%Y-%m-%d %H:%M:%S")))
             conexion.commit()
             time.sleep(2)
@@ -535,7 +542,7 @@ def revisar_y_publicar():
     # ----- 5. CURSOSDEV -----
     print("\n🕷️ Scraping CursosDev...")
     for curso in scraping_cursosdev():
-        cursor.execute("SELECT * FROM cursos WHERE url_original = ?", (curso['url'],))
+        cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (curso['url'],))
         if cursor.fetchone():
             print(f"⏩ Duplicado (CursosDev): {curso['titulo'][:40]}...")
             continue
@@ -548,11 +555,12 @@ def revisar_y_publicar():
         
         resultado = enviar_a_telegram(mensaje)
         if resultado and resultado.get("ok"):
-            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (?, ?, ?, ?)",
+            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
                            (curso['url'], curso['titulo'], curso['plataforma'], time.strftime("%Y-%m-%d %H:%M:%S")))
             conexion.commit()
             time.sleep(2)
     
+    cursor.close()
     conexion.close()
     print("\n✅ Ciclo completado. Esperando 10 minutos...")
 
@@ -561,7 +569,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Bot de Cursos activo y escaneando...", 200
+    return "🤖 Bot de Cursos activo y escaneando con PostgreSQL...", 200
 
 @app.route('/ping')
 def ping():
@@ -579,14 +587,10 @@ def bucle_scraping_infinito():
         time.sleep(600)
 
 if __name__ == "__main__":
-    print("🤖 BOT INICIADO - Modo: RSS + Scraping Multiplataforma")
-    print("Plataformas detectadas: Udemy, Coursera, edX, Hotmart, Crehana, Domestika, Platzi")
-    print("Fuentes: Facialix (RSS), Reddit (filtrado por español), Cursoteca Cupones, Cursoteca Blog, Centro Educatic, CursosDev")
+    print("🤖 BOT INICIADO - Modo: RSS + Scraping Multiplataforma con DB Persistente")
     
-    # 1. Iniciamos el scraping en un hilo secundario para no bloquear a Render
     hilo_scraping = threading.Thread(target=bucle_scraping_infinito, daemon=True)
     hilo_scraping.start()
     
-    # 2. Arrancamos el servidor Flask en el hilo principal
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
