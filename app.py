@@ -8,6 +8,8 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 from langdetect import detect, DetectorFactory
+from flask import Flask
+import threading
 
 # ================= CONFIGURACIÓN =================
 DetectorFactory.seed = 0  # Para resultados consistentes
@@ -554,12 +556,37 @@ def revisar_y_publicar():
     conexion.close()
     print("\n✅ Ciclo completado. Esperando 10 minutos...")
 
-# ================= EJECUCIÓN INFINITA =================
+# ================= SERVIDOR WEB (PARA RENDER) Y EJECUCIÓN =================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Bot de Cursos activo y escaneando...", 200
+
+@app.route('/ping')
+def ping():
+    return "OK", 200
+
+def bucle_scraping_infinito():
+    print("🤖 Hilo de scraping iniciado en segundo plano...")
+    while True:
+        try:
+            revisar_y_publicar()
+        except Exception as e:
+            print(f"❌ Error crítico en el ciclo de revisión: {e}")
+        
+        print("💤 Esperando 10 minutos para la siguiente ronda...\n")
+        time.sleep(600)
+
 if __name__ == "__main__":
     print("🤖 BOT INICIADO - Modo: RSS + Scraping Multiplataforma")
     print("Plataformas detectadas: Udemy, Coursera, edX, Hotmart, Crehana, Domestika, Platzi")
     print("Fuentes: Facialix (RSS), Reddit (filtrado por español), Cursoteca Cupones, Cursoteca Blog, Centro Educatic, CursosDev")
-    while True:
-        revisar_y_publicar()
-        print("💤 Esperando 10 minutos para la siguiente ronda...\n")
-        time.sleep(600)
+    
+    # 1. Iniciamos el scraping en un hilo secundario para no bloquear a Render
+    hilo_scraping = threading.Thread(target=bucle_scraping_infinito, daemon=True)
+    hilo_scraping.start()
+    
+    # 2. Arrancamos el servidor Flask en el hilo principal
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
