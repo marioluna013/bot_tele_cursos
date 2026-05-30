@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime, timedelta
 import feedparser
 import requests
 import re
@@ -12,14 +13,12 @@ import threading
 import psycopg2  # Conector para PostgreSQL
 
 # ================= CONFIGURACIÓN =================
-DetectorFactory.seed = 0  # Para resultados consistentes
+DetectorFactory.seed = 0  
 load_dotenv()
 TOKEN_TELEGRAM = os.getenv("TELEGRAM_TOKEN")
 ID_CANAL = os.getenv("TELEGRAM_CHANNEL_ID")
-# Render inyecta esta variable automáticamente tras ponerla en el panel
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Fuentes RSS (incluyendo Reddit)
 FUENTES_RSS = [
     "https://facialix.com/feed/",
     "https://www.reddit.com/r/udemyfreebies/.rss",
@@ -27,26 +26,23 @@ FUENTES_RSS = [
     "https://www.reddit.com/r/FreeUdemyCoupons/.rss",
 ]
 
-# Plataformas válidas para detectar
 PLATAFORMAS = [
     'udemy.com', 'coursera.org', 'edx.org', 'sharecourse.net',
     'linksynergy.com', 'click.linksynergy.com', 'udemy-k.com',
     'hotmart.com', 'crehana.com', 'domestika.org', 'platzi.com'
 ]
 
-# ================= LIMPIAR HTML =================
+# ================= AUXILIARES =================
 def limpiar_html(texto):
-    """Elimina todas las etiquetas HTML y deja solo texto plano limpio"""
     if not texto:
         return ""
     soup = BeautifulSoup(texto, 'html.parser')
     texto_plano = soup.get_text(separator=' ', strip=True)
     texto_plano = re.sub(r'\s+', ' ', texto_plano)
+    soup.decompose()  # Libera memoria RAM
     return texto_plano.strip()
 
-# ================= DETECTAR IDIOMA =================
 def es_espanol(texto):
-    """Detecta si un texto está en español usando langdetect"""
     if not texto:
         return False
     try:
@@ -54,27 +50,25 @@ def es_espanol(texto):
     except:
         return False
 
-# ================= BASE DE DATOS (POSTGRESQL) =================
+# ================= BASE DE DATOS =================
 def iniciar_base_datos():
     """Crea la tabla en PostgreSQL si no existe"""
     try:
-        conexion = psycopg2.connect(DATABASE_URL)
-        cursor = conexion.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS cursos (
-                id SERIAL PRIMARY KEY,
-                url_original TEXT UNIQUE,
-                titulo TEXT,
-                plataforma TEXT,
-                fecha_publicacion TEXT
-            )
-        ''')
-        conexion.commit()
-        cursor.close()
-        conexion.close()
-        print("📊 Base de datos PostgreSQL verificada/iniciada correctamente.")
+        with psycopg2.connect(DATABASE_URL) as conexion:
+            with conexion.cursor() as cursor:
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS cursos (
+                        id SERIAL PRIMARY KEY,
+                        url_original TEXT UNIQUE,
+                        titulo TEXT,
+                        plataforma TEXT,
+                        fecha_publicacion TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+                    )
+                ''')
+                conexion.commit()
+        print("📊 Base de datos PostgreSQL verificada correctamente.")
     except Exception as e:
-        print(f"❌ Error al iniciar la base de datos PostgreSQL: {e}")
+        print(f"❌ Error al iniciar la base de datos: {e}")
 
 # ================= ENVIAR A TELEGRAM =================
 def enviar_a_telegram(texto):
@@ -89,491 +83,264 @@ def enviar_a_telegram(texto):
         response = requests.post(url, json=payload, timeout=10)
         return response.json()
     except Exception as e:
-        print(f"❌ Error de red al enviar a Telegram: {e}")
+        print(f"❌ Error de red en Telegram: {e}")
         return None
 
-# ================= SCRAPING CURSOTECAPLUS (CUPONES UDEMY) =================
+# ================= SCRAPING FUENTES =================
 def scraping_cursoteca_cupones():
-    """Extrae cursos de https://cursotecaplus.com/cupones-udemy/"""
     cursos = []
     url_listado = "https://cursotecaplus.com/cupones-udemy/"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
         respuesta = requests.get(url_listado, headers=headers, timeout=15)
-        if respuesta.status_code != 200:
-            print(f"⚠️ Error {respuesta.status_code} en Cursoteca Cupones")
-            return cursos
+        if respuesta.status_code != 200: return []
         
         soup = BeautifulSoup(respuesta.text, 'html.parser')
-        
         for article in soup.find_all('article', class_='curso-card'):
             enlace_tag = article.find('a', href=True)
-            if not enlace_tag:
-                continue
+            if not enlace_tag: continue
             
             titulo_tag = article.find('h2')
-            titulo_raw = titulo_tag.get_text(strip=True) if titulo_tag else "Curso sin título"
-            titulo = limpiar_html(titulo_raw)
+            titulo = limpiar_html(titulo_tag.get_text()) if titulo_tag else "Curso sin título"
             url_articulo = urljoin(url_listado, enlace_tag['href'])
             
-            print(f"   🔍 Procesando: {titulo[:40]}...")
-            
-            enlace_real = None
-            plataforma = None
-            
+            enlace_real, plataforma = None, None
             try:
                 resp_articulo = requests.get(url_articulo, headers=headers, timeout=15)
                 if resp_articulo.status_code == 200:
-                    soup_articulo = BeautifulSoup(resp_articulo.text, 'html.parser')
-                    
-                    for a in soup_articulo.find_all('a', href=True):
+                    soup_art = BeautifulSoup(resp_articulo.text, 'html.parser')
+                    for a in soup_art.find_all('a', href=True):
                         for patron in PLATAFORMAS:
                             if patron in a['href'].lower():
                                 enlace_real = a['href']
                                 plataforma = patron.split('.')[0].capitalize()
                                 break
-                        if enlace_real:
-                            break
-                    
-                    if enlace_real:
-                        print(f"   ✅ Enlace encontrado: {plataforma}")
-                    else:
-                        boton = soup_articulo.find('a', string=lambda t: t and ('Ver cupón' in t or 'Acceder' in t or 'Ir al curso' in t))
-                        if boton and boton.get('href'):
-                            enlace_real = urljoin(url_articulo, boton['href'])
-                            for patron in PLATAFORMAS:
-                                if patron in enlace_real.lower():
-                                    plataforma = patron.split('.')[0].capitalize()
-                                    print(f"   ✅ Redirección a: {plataforma}")
-                                    break
-                            if not plataforma:
-                                print(f"   ⚠️ Botón encontrado pero no es de plataforma conocida")
-                        else:
-                            print(f"   ⚠️ No se encontró enlace a plataforma conocida")
-            except Exception as e:
-                print(f"   ⚠️ Error: {e}")
-            
-            if not enlace_real:
-                enlace_real = url_articulo
-                plataforma = "Web"
+                        if enlace_real: break
+                    soup_art.decompose()
+            except: pass
             
             cursos.append({
-                'titulo': titulo,
-                'url': enlace_real,
-                'plataforma': plataforma,
-                'fuente': 'Cursoteca Cupones'
+                'titulo': titulo, 'url': enlace_real if enlace_real else url_articulo,
+                'plataforma': plataforma if plataforma else "Web"
             })
-            
-            time.sleep(0.3)
-            
-    except Exception as e:
-        print(f"❌ Error en scraping de Cursoteca Cupones: {e}")
-    
+        soup.decompose()
+    except Exception as e: print(f"❌ Error Cursoteca Cupones: {e}")
     return cursos
 
-# ================= SCRAPING CURSOTECAPLUS (BLOG) =================
 def scraping_cursoteca_blog():
-    """Extrae cursos del blog de https://cursotecaplus.com/category/programacion/"""
     cursos = []
     url_listado = "https://cursotecaplus.com/category/programacion/"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
         respuesta = requests.get(url_listado, headers=headers, timeout=15)
-        if respuesta.status_code != 200:
-            print(f"⚠️ Error {respuesta.status_code} en Cursoteca Blog")
-            return cursos
-        
+        if respuesta.status_code != 200: return []
         soup = BeautifulSoup(respuesta.text, 'html.parser')
-        
         for article in soup.find_all('article', class_='entry-card'):
             titulo_tag = article.find('h2', class_='entry-title')
-            if not titulo_tag:
-                continue
-            
+            if not titulo_tag: continue
             enlace_tag = titulo_tag.find('a', href=True)
-            if not enlace_tag:
-                continue
+            if not enlace_tag: continue
             
-            titulo_raw = titulo_tag.get_text(strip=True)
-            titulo = limpiar_html(titulo_raw)
+            titulo = limpiar_html(titulo_tag.get_text())
             url_articulo = urljoin(url_listado, enlace_tag['href'])
             
-            print(f"   🔍 Procesando: {titulo[:40]}...")
-            
-            enlace_real = None
-            plataforma = None
-            
+            enlace_real, plataforma = None, None
             try:
                 resp_articulo = requests.get(url_articulo, headers=headers, timeout=15)
                 if resp_articulo.status_code == 200:
-                    soup_articulo = BeautifulSoup(resp_articulo.text, 'html.parser')
-                    
-                    for a in soup_articulo.find_all('a', href=True):
+                    soup_art = BeautifulSoup(resp_articulo.text, 'html.parser')
+                    for a in soup_art.find_all('a', href=True):
                         for patron in PLATAFORMAS:
                             if patron in a['href'].lower():
                                 enlace_real = a['href']
                                 plataforma = patron.split('.')[0].capitalize()
                                 break
-                        if enlace_real:
-                            break
-                    
-                    if enlace_real:
-                        print(f"   ✅ Enlace encontrado: {plataforma}")
-                    else:
-                        iframes = soup_articulo.find_all('iframe', src=True)
-                        for iframe in iframes:
-                            for patron in PLATAFORMAS:
-                                if patron in iframe['src'].lower():
-                                    enlace_real = iframe['src']
-                                    plataforma = patron.split('.')[0].capitalize()
-                                    print(f"   ✅ Enlace en iframe: {plataforma}")
-                                    break
-                            if enlace_real:
-                                break
-                        
-                        if not enlace_real:
-                            print(f"   ⚠️ No se encontró enlace a plataforma conocida")
-            except Exception as e:
-                print(f"   ⚠️ Error: {e}")
-            
-            if not enlace_real:
-                enlace_real = url_articulo
-                plataforma = "Web"
+                        if enlace_real: break
+                    soup_art.decompose()
+            except: pass
             
             cursos.append({
-                'titulo': titulo,
-                'url': enlace_real,
-                'plataforma': plataforma,
-                'fuente': 'Cursoteca Blog'
+                'titulo': titulo, 'url': enlace_real if enlace_real else url_articulo,
+                'plataforma': plataforma if plataforma else "Web"
             })
-            
-            time.sleep(0.3)
-            
-    except Exception as e:
-        print(f"❌ Error en scraping de Cursoteca Blog: {e}")
-    
+        soup.decompose()
+    except Exception as e: print(f"❌ Error Cursoteca Blog: {e}")
     return cursos
 
-# ================= SCRAPING CENTRO EDUCATIC =================
 def scraping_centro_educatic():
-    """Extrae cursos de https://centro-educatic.com/public/gratis-udemy"""
+    """Extrae cursos de Centro Educatic adaptado al nuevo HTML con búsqueda flexible por clase"""
     cursos = []
     url_listado = "https://centro-educatic.com/public/gratis-udemy"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
     try:
         respuesta = requests.get(url_listado, headers=headers, timeout=15)
-        if respuesta.status_code != 200:
-            print(f"⚠️ Error {respuesta.status_code} en Centro Educatic")
-            return cursos
+        if respuesta.status_code != 200: return []
         
         soup = BeautifulSoup(respuesta.text, 'html.parser')
+        # ✅ Corregido: Busca cualquier etiqueta (div, li, etc.) que use la clase course-card
+        tarjetas = soup.find_all(True, class_='course-card')
+        print(f"   📊 Tarjetas encontradas en Centro Educatic: {len(tarjetas)}")
         
-        for col in soup.find_all('div', class_='col-md-6 col-lg-4'):
-            card = col.find('div', class_='card')
-            if not card:
-                continue
+        for card in tarjetas:
+            enlace_tag = card.find('a', class_='course-link')
+            if not enlace_tag or not enlace_tag.get('href'): continue
             
-            titulo_tag = card.find('h6', class_='card-title')
-            if not titulo_tag:
-                titulo_tag = card.find('h5') or card.find('h3')
+            url_articulo = urljoin(url_listado, enlace_tag['href'])
+            titulo = limpiar_html(enlace_tag.get_text())
             
-            if not titulo_tag:
-                continue
-            
-            enlace_tag = titulo_tag.find('a', href=True)
-            if not enlace_tag:
-                continue
-            
-            titulo_raw = titulo_tag.get_text(strip=True)
-            titulo = limpiar_html(titulo_raw)
-            url_curso = urljoin(url_listado, enlace_tag['href'])
-            
-            boton = card.find('a', class_='btn-primary')
-            if boton and boton.get('href'):
-                url_curso = urljoin(url_listado, boton['href'])
-            
-            print(f"   🔍 Procesando: {titulo[:40]}...")
-            
+            print(f"   🔍 Analizando ficha: {titulo[:30]}...")
             enlace_real = None
-            plataforma = None
-            
-            try:
-                for patron in PLATAFORMAS:
-                    if patron in url_curso.lower():
-                        enlace_real = url_curso
-                        plataforma = patron.split('.')[0].capitalize()
-                        break
-                
-                if not enlace_real:
-                    resp_curso = requests.get(url_curso, headers=headers, timeout=15)
-                    if resp_curso.status_code == 200:
-                        soup_curso = BeautifulSoup(resp_curso.text, 'html.parser')
-                        for a in soup_curso.find_all('a', href=True):
-                            for patron in PLATAFORMAS:
-                                if patron in a['href'].lower():
-                                    enlace_real = a['href']
-                                    plataforma = patron.split('.')[0].capitalize()
-                                    break
-                            if enlace_real:
-                                break
-                
-                if enlace_real:
-                    print(f"   ✅ Enlace encontrado: {plataforma}")
-                else:
-                    print(f"   ⚠️ Usando enlace original")
-                    enlace_real = url_curso
-                    plataforma = "Web"
-                    
-            except Exception as e:
-                print(f"   ⚠️ Error: {e}")
-                enlace_real = url_curso
-                plataforma = "Web"
-            
-            cursos.append({
-                'titulo': titulo,
-                'url': enlace_real,
-                'plataforma': plataforma,
-                'fuente': 'Centro Educatic'
-            })
-            
-            time.sleep(0.3)
-            
-    except Exception as e:
-        print(f"❌ Error en scraping de Centro Educatic: {e}")
-    
-    return cursos
-
-# ================= SCRAPING CURSOSDEV =================
-def scraping_cursosdev():
-    """Extrae cursos de https://www.cursosdev.com/coupons/Spanish"""
-    cursos = []
-    url_listado = "https://www.cursosdev.com/coupons/Spanish"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
-    try:
-        respuesta = requests.get(url_listado, headers=headers, timeout=15)
-        if respuesta.status_code != 200:
-            print(f"⚠️ Error {respuesta.status_code} en CursosDev")
-            return cursos
-        
-        soup = BeautifulSoup(respuesta.text, 'html.parser')
-        
-        articulos = soup.find_all('article', class_='group')
-        
-        if not articulos:
-            print(f"   ⚠️ No se encontraron cursos en el listado")
-            return cursos
-        
-        print(f"   📊 Cursos encontrados: {len(articulos)}")
-        
-        for articulo in articulos:
-            enlace_tag = articulo.find('a', href=True)
-            if not enlace_tag:
-                continue
-            
-            url_curso = urljoin(url_listado, enlace_tag['href'])
-            
-            titulo_tag = articulo.find('h2')
-            titulo_raw = titulo_tag.get_text(strip=True) if titulo_tag else "Curso sin título"
-            titulo = limpiar_html(titulo_raw)
-            
-            print(f"   🔍 Procesando: {titulo[:40]}...")
-            
-            enlace_udemy = None
             plataforma = "Web"
             
             try:
-                resp_curso = requests.get(url_curso, headers=headers, timeout=15)
-                if resp_curso.status_code == 200:
-                    soup_curso = BeautifulSoup(resp_curso.text, 'html.parser')
-                    
-                    boton = soup_curso.find('a', class_='bg-indigo-600')
-                    if not boton:
-                        boton = soup_curso.find('a', string=lambda t: t and ('Obtener Cupón' in t or 'cupón' in t.lower() or 'Cupón' in t))
-                    
-                    if boton and boton.get('href'):
-                        enlace_udemy = boton['href']
-                        if 'udemy.com' in enlace_udemy or 'trk.udemy.com' in enlace_udemy:
-                            plataforma = "Udemy"
-                            print(f"   ✅ Enlace Udemy encontrado")
-                        else:
-                            print(f"   ⚠️ Enlace no es de Udemy")
-                    else:
-                        print(f"   ⚠️ No se encontró botón de cupón")
+                # 🐢 Espera de 3 segundos para evitar bloqueos del servidor
+                time.sleep(3.0)
+                resp_articulo = requests.get(url_articulo, headers=headers, timeout=15)
+                if resp_articulo.status_code == 200:
+                    soup_art = BeautifulSoup(resp_articulo.text, 'html.parser')
+                    for a in soup_art.find_all('a', href=True):
+                        for patron in PLATAFORMAS:
+                            if patron in a['href'].lower():
+                                enlace_real = a['href']
+                                plataforma = patron.split('.')[0].capitalize()
+                                break
+                        if enlace_real: break
+                    soup_art.decompose()
             except Exception as e:
-                print(f"   ⚠️ Error obteniendo enlace: {e}")
+                print(f"   ⚠️ Error en ficha interna: {e}")
             
-            if not enlace_udemy:
-                enlace_udemy = url_curso
-                print(f"   ⚠️ Usando enlace del artículo")
+            if not enlace_real:
+                enlace_real = url_articulo
+                print("   ⚠️ No se localizó enlace directo a Udemy. Usando ficha.")
             
-            cursos.append({
-                'titulo': titulo,
-                'url': enlace_udemy,
-                'plataforma': plataforma,
-                'fuente': 'CursosDev'
-            })
-            
-            time.sleep(0.3)
-            
-    except Exception as e:
-        print(f"❌ Error en scraping de CursosDev: {e}")
-    
+            cursos.append({'titulo': titulo, 'url': enlace_real, 'plataforma': plataforma})
+        soup.decompose()
+    except Exception as e: print(f"❌ Error Centro Educatic: {e}")
     return cursos
 
-# ================= LÓGICA PRINCIPAL =================
+def scraping_cursosdev():
+    cursos = []
+    url_listado = "https://www.cursosdev.com/coupons/Spanish"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    try:
+        respuesta = requests.get(url_listado, headers=headers, timeout=15)
+        if respuesta.status_code != 200: return []
+        soup = BeautifulSoup(respuesta.text, 'html.parser')
+        for articulo in soup.find_all('article', class_='group'):
+            enlace_tag = articulo.find('a', href=True)
+            if not enlace_tag: continue
+            url_curso = urljoin(url_listado, enlace_tag['href'])
+            titulo_tag = articulo.find('h2')
+            titulo = limpiar_html(titulo_tag.get_text()) if titulo_tag else "Curso sin título"
+            
+            enlace_udemy = None
+            try:
+                resp_cur = requests.get(url_curso, headers=headers, timeout=15)
+                if resp_cur.status_code == 200:
+                    soup_cur = BeautifulSoup(resp_cur.text, 'html.parser')
+                    boton = soup_cur.find('a', class_='bg-indigo-600') or soup_cur.find('a', string=lambda t: t and 'cupón' in t.lower())
+                    if boton and boton.get('href'): enlace_udemy = boton['href']
+                    soup_cur.decompose()
+            except: pass
+            
+            cursos.append({
+                'titulo': titulo, 'url': enlace_udemy if enlace_udemy else url_curso,
+                'plataforma': "Udemy" if enlace_udemy and 'udemy' in enlace_udemy.lower() else "Web"
+            })
+        soup.decompose()
+    except Exception as e: print(f"❌ Error CursosDev: {e}")
+    return cursos
+
+# ================= LÓGICA PRINCIPAL (CON CADUCIDAD SEMANAL) =================
 def revisar_y_publicar():
     iniciar_base_datos()
-    conexion = psycopg2.connect(DATABASE_URL)
-    cursor = conexion.cursor()
     
-    # ----- 1. RSS FACIALIX Y REDDIT -----
-    headers_rss = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    # 🕒 Margen de repetición: 7 días atrás
+    fecha_limite = datetime.now() - timedelta(days=7)
     
-    for url_feed in FUENTES_RSS:
-        print(f"🔍 Revisando RSS: {url_feed}")
-        try:
-            respuesta = requests.get(url_feed, headers=headers_rss, timeout=15)
-            if respuesta.status_code != 200:
-                print(f"⚠️ Error {respuesta.status_code}")
-                continue
-            feed = feedparser.parse(respuesta.text)
-        except Exception as e:
-            print(f"❌ Error en RSS {url_feed}: {e}")
-            continue
-        
-        if not feed.entries:
-            print(f"⚠️ Feed vacío: {url_feed}")
-            continue
-        
-        for entrada in feed.entries[:20]:
-            if not hasattr(entrada, 'link'):
-                continue
-            url_articulo = entrada.link
-            titulo_raw = entrada.title if hasattr(entrada, 'title') else "Curso sin título"
-            titulo = limpiar_html(titulo_raw)
+    with psycopg2.connect(DATABASE_URL) as conexion:
+        with conexion.cursor() as cursor:
             
-            if 'reddit.com' in url_feed:
-                if not es_espanol(titulo):
-                    print(f"⏩ Curso omitido (no es español): {titulo[:40]}...")
-                    continue
+            # ----- 1. FUENTES RSS -----
+            for url_feed in FUENTES_RSS:
+                print(f"🔍 Revisando RSS: {url_feed}")
+                try:
+                    respuesta = requests.get(url_feed, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+                    if respuesta.status_code != 200: continue
+                    feed = feedparser.parse(respuesta.text)
+                except: continue
+                
+                for entrada in feed.entries[:20]:
+                    if not hasattr(entrada, 'link'): continue
+                    url_articulo = entrada.link
+                    titulo = limpiar_html(entrada.title) if hasattr(entrada, 'title') else "Curso sin título"
+                    
+                    if 'reddit.com' in url_feed and not es_espanol(titulo): continue
+                    
+                    # Comprobamos si ya se publicó en los últimos 7 días
+                    cursor.execute(
+                        "SELECT id FROM cursos WHERE url_original = %s AND fecha_publicacion > %s", 
+                        (url_articulo, fecha_limite)
+                    )
+                    if cursor.fetchone(): continue
+                    
+                    print(f"🚀 Publicando desde RSS: {titulo[:40]}...")
+                    mensaje = f"🎁 *NUEVO CURSO DISPONIBLE*\n\n📘 *Título:* {titulo}\n\n🔗 [VER CURSO]({url_articulo})\n\n⚠️ *Reclama el cupón rápido antes de que expire.*"
+                    resultado = enviar_a_telegram(mensaje)
+                    if resultado and resultado.get("ok"):
+                        cursor.execute("""
+                            INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) 
+                            VALUES (%s, %s, %s, NOW())
+                            ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
+                        """, (url_articulo, titulo, "RSS"))
+                        conexion.commit()
+                        # 🕒 Pausa de 30 segundos entre cursos para evitar ráfagas masivas
+                        time.sleep(30.0)
             
-            cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (url_articulo,))
-            if cursor.fetchone():
-                print(f"⏩ Duplicado (RSS): {titulo[:40]}...")
-                continue
+            # ----- 2. SCRAPING WEBS -----
+            fuentes_scraping = [
+                ("Cursoteca Cupones", scraping_cursoteca_cupones),
+                ("Cursoteca Blog", scraping_cursoteca_blog),
+                ("Centro Educatic", scraping_centro_educatic),
+                ("CursosDev", scraping_cursosdev)
+            ]
             
-            print(f"🚀 Publicando desde RSS: {titulo[:50]}...")
-            mensaje = f"🎁 *NUEVO CURSO DISPONIBLE*\n\n📘 *Título:* {titulo}\n\n🔗 [VER CURSO]({url_articulo})\n\n⚠️ *Entra en el enlace para reclamar el cupón antes de que se agote.*"
-            
-            resultado = enviar_a_telegram(mensaje)
-            if resultado and resultado.get("ok"):
-                cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
-                               (url_articulo, titulo, "RSS", time.strftime("%Y-%m-%d %H:%M:%S")))
-                conexion.commit()
-                time.sleep(2)
-    
-    # ----- 2. CURSOTECA CUPONES -----
-    print("\n🕷️ Scraping Cursoteca Cupones...")
-    for curso in scraping_cursoteca_cupones():
-        cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (curso['url'],))
-        if cursor.fetchone():
-            print(f"⏩ Duplicado (Cursoteca Cupones): {curso['titulo'][:40]}...")
-            continue
-        
-        print(f"🚀 Publicando desde Cursoteca Cupones: {curso['titulo'][:50]}...")
-        if curso['plataforma'] != "Web":
-            mensaje = f"🎁 *NUEVO CURSO GRATIS EN {curso['plataforma'].upper()}*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [ACCEDER AL CURSO GRATIS]({curso['url']})\n\n⚠️ *El cupón puede caducar en horas. ¡Actívate!*"
-        else:
-            mensaje = f"🎁 *NUEVO CURSO DISPONIBLE*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [VER CUPÓN EN LA WEB]({curso['url']})\n\n⚠️ *Entra en la web y busca el botón para reclamar el cupón.*"
-        
-        resultado = enviar_a_telegram(mensaje)
-        if resultado and resultado.get("ok"):
-            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
-                           (curso['url'], curso['titulo'], curso['plataforma'], time.strftime("%Y-%m-%d %H:%M:%S")))
-            conexion.commit()
-            time.sleep(2)
-    
-    # ----- 3. CURSOTECA BLOG -----
-    print("\n🕷️ Scraping Cursoteca Blog...")
-    for curso in scraping_cursoteca_blog():
-        cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (curso['url'],))
-        if cursor.fetchone():
-            print(f"⏩ Duplicado (Cursoteca Blog): {curso['titulo'][:40]}...")
-            continue
-        
-        print(f"🚀 Publicando desde Cursoteca Blog: {curso['titulo'][:50]}...")
-        if curso['plataforma'] != "Web":
-            mensaje = f"🎁 *NUEVO CURSO GRATIS EN {curso['plataforma'].upper()}*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [ACCEDER AL CURSO GRATIS]({curso['url']})\n\n⚠️ *El cupón puede caducar en horas. ¡Actívate!*"
-        else:
-            mensaje = f"🎁 *NUEVO CURSO DISPONIBLE*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [VER CURSO EN LA WEB]({curso['url']})\n\n⚠️ *Entra en la web para más información.*"
-        
-        resultado = enviar_a_telegram(mensaje)
-        if resultado and resultado.get("ok"):
-            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
-                           (curso['url'], curso['titulo'], curso['plataforma'], time.strftime("%Y-%m-%d %H:%M:%S")))
-            conexion.commit()
-            time.sleep(2)
-    
-    # ----- 4. CENTRO EDUCATIC -----
-    print("\n🕷️ Scraping Centro Educatic...")
-    for curso in scraping_centro_educatic():
-        cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (curso['url'],))
-        if cursor.fetchone():
-            print(f"⏩ Duplicado (Centro Educatic): {curso['titulo'][:40]}...")
-            continue
-        
-        print(f"🚀 Publicando desde Centro Educatic: {curso['titulo'][:50]}...")
-        if curso['plataforma'] != "Web":
-            mensaje = f"🎁 *NUEVO CURSO GRATIS EN {curso['plataforma'].upper()}*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [ACCEDER AL CURSO GRATIS]({curso['url']})\n\n⚠️ *El cupón puede caducar en horas. ¡Actívate!*"
-        else:
-            mensaje = f"🎁 *NUEVO CURSO DISPONIBLE*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [VER CUPÓN EN LA WEB]({curso['url']})\n\n⚠️ *Entra en la web y busca el botón para reclamar el cupón.*"
-        
-        resultado = enviar_a_telegram(mensaje)
-        if resultado and resultado.get("ok"):
-            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
-                           (curso['url'], curso['titulo'], curso['plataforma'], time.strftime("%Y-%m-%d %H:%M:%S")))
-            conexion.commit()
-            time.sleep(2)
-    
-    # ----- 5. CURSOSDEV -----
-    print("\n🕷️ Scraping CursosDev...")
-    for curso in scraping_cursosdev():
-        cursor.execute("SELECT id FROM cursos WHERE url_original = %s", (curso['url'],))
-        if cursor.fetchone():
-            print(f"⏩ Duplicado (CursosDev): {curso['titulo'][:40]}...")
-            continue
-        
-        print(f"🚀 Publicando desde CursosDev: {curso['titulo'][:50]}...")
-        if curso['plataforma'] != "Web":
-            mensaje = f"🎁 *NUEVO CURSO GRATIS EN {curso['plataforma'].upper()}*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [ACCEDER AL CURSO GRATIS]({curso['url']})\n\n⚠️ *El cupón puede caducar en horas. ¡Actívate!*"
-        else:
-            mensaje = f"🎁 *NUEVO CURSO DISPONIBLE*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [VER CUPÓN EN LA WEB]({curso['url']})\n\n⚠️ *Entra en la web y busca el botón para reclamar el cupón.*"
-        
-        resultado = enviar_a_telegram(mensaje)
-        if resultado and resultado.get("ok"):
-            cursor.execute("INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) VALUES (%s, %s, %s, %s)",
-                           (curso['url'], curso['titulo'], curso['plataforma'], time.strftime("%Y-%m-%d %H:%M:%S")))
-            conexion.commit()
-            time.sleep(2)
-    
-    cursor.close()
-    conexion.close()
-    print("\n✅ Ciclo completado. Esperando 10 minutos...")
+            for nombre_fuente, funcion_scraping in fuentes_scraping:
+                print(f"\n🕷️ Ejecutando scraping en: {nombre_fuente}...")
+                for curso in funcion_scraping():
+                    cursor.execute(
+                        "SELECT id FROM cursos WHERE url_original = %s AND fecha_publicacion > %s", 
+                        (curso['url'], fecha_limite)
+                    )
+                    if cursor.fetchone(): continue
+                    
+                    print(f"🚀 Publicando desde {nombre_fuente}: {curso['titulo'][:40]}...")
+                    if curso['plataforma'] != "Web":
+                        mensaje = f"🎁 *NUEVO CURSO GRATIS EN {curso['plataforma'].upper()}*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [ACCEDER AL CURSO GRATIS]({curso['url']})\n\n⚠️ *Cupón activo por tiempo limitado.*"
+                    else:
+                        mensaje = f"🎁 *NUEVO CURSO DISPONIBLE*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [VER EN LA WEB]({curso['url']})\n\n⚠️ *Sigue los pasos en la web para conseguirlo.*"
+                    
+                    resultado = enviar_a_telegram(mensaje)
+                    if resultado and resultado.get("ok"):
+                        cursor.execute("""
+                            INSERT INTO cursos (url_original, titulo, plataforma, fecha_publicacion) 
+                            VALUES (%s, %s, %s, NOW())
+                            ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
+                        """, (curso['url'], curso['titulo'], curso['plataforma']))
+                        conexion.commit()
+                        # 🕒 Pausa de 30 segundos entre cursos para evitar ráfagas masivas
+                        time.sleep(30.0)
 
-# ================= SERVIDOR WEB (PARA RENDER) Y EJECUCIÓN =================
+    print("\n✅ Ciclo de scraping completado con éxito.")
+
+# ================= SERVIDOR FLASK =================
 app = Flask(__name__)
 
 @app.route('/')
-def home():
-    return "🤖 Bot de Cursos activo y escaneando con PostgreSQL...", 200
+def home(): return "🤖 Bot de Cursos con Caducidad Semanal y Anti-Spam Activo...", 200
 
 @app.route('/ping')
-def ping():
-    return "OK", 200
+def ping(): return "OK", 200
 
 def bucle_scraping_infinito():
     print("🤖 Hilo de scraping iniciado en segundo plano...")
@@ -581,16 +348,13 @@ def bucle_scraping_infinito():
         try:
             revisar_y_publicar()
         except Exception as e:
-            print(f"❌ Error crítico en el ciclo de revisión: {e}")
-        
+            print(f"❌ Error crítico en el bucle: {e}")
         print("💤 Esperando 10 minutos para la siguiente ronda...\n")
         time.sleep(600)
 
 if __name__ == "__main__":
-    print("🤖 BOT INICIADO - Modo: RSS + Scraping Multiplataforma con DB Persistente")
-    
-    hilo_scraping = threading.Thread(target=bucle_scraping_infinito, daemon=True)
-    hilo_scraping.start()
-    
+    print("🤖 BOT INICIADO - Configuración con Ventana de 7 Días y Publicación Espaciada (30s)")
+    hilo = threading.Thread(target=bucle_scraping_infinito, daemon=True)
+    hilo.start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
