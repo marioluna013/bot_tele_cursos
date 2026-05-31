@@ -248,7 +248,7 @@ def scraping_cursosdev():
     except Exception as e: print(f"❌ Error CursosDev: {e}", flush=True)
     return cursos
 
-# ================= LÓGICA PRINCIPAL (CON FORZADO DE FLUSH) =================
+# ================= LÓGICA PRINCIPAL (PROTEGIDA CONTRA TIPOS) =================
 def revisar_y_publicar():
     iniciar_base_datos()
     fecha_limite = datetime.now() - timedelta(days=7)
@@ -286,6 +286,13 @@ def revisar_y_publicar():
                     
                     if registro:
                         fecha_registro = registro[0]
+                        # 🔐 PROTECCIÓN: Si viene como texto (String), lo convertimos a Datetime
+                        if isinstance(fecha_registro, str):
+                            try:
+                                fecha_registro = datetime.strptime(fecha_registro.split(".")[0], "%Y-%m-%d %H:%M:%S")
+                            except:
+                                fecha_registro = datetime.now() - timedelta(days=10) # Forzado a pasar filtro si falla
+                        
                         if fecha_registro > fecha_limite:
                             print(f"   ⏩ Duplicado reciente (RSS): {titulo[:30]}...", flush=True)
                             continue
@@ -322,6 +329,13 @@ def revisar_y_publicar():
                     
                     if registro:
                         fecha_registro = registro[0]
+                        # 🔐 PROTECCIÓN: Si viene como texto (String), lo convertimos a Datetime
+                        if isinstance(fecha_registro, str):
+                            try:
+                                fecha_registro = datetime.strptime(fecha_registro.split(".")[0], "%Y-%m-%d %H:%M:%S")
+                            except:
+                                fecha_registro = datetime.now() - timedelta(days=10)
+                                
                         if fecha_registro > fecha_limite:
                             print(f"   ⏩ Duplicado reciente ({nombre_fuente}): {curso['titulo'][:30]}...", flush=True)
                             continue
