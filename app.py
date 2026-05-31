@@ -177,6 +177,7 @@ def scraping_centro_educatic():
         if respuesta.status_code != 200: return []
         
         soup = BeautifulSoup(respuesta.text, 'html.parser')
+        # Búsqueda tolerante de la clase en cualquier tipo de etiqueta
         tarjetas = soup.find_all(True, class_='course-card')
         print(f"   📊 Tarjetas encontradas en Centro Educatic: {len(tarjetas)}")
         
@@ -192,7 +193,7 @@ def scraping_centro_educatic():
             plataforma = "Web"
             
             try:
-                time.sleep(3.0)
+                time.sleep(3.0)  # Pausa prudencial para evitar bloqueos
                 resp_articulo = requests.get(url_articulo, headers=headers, timeout=15)
                 if resp_articulo.status_code == 200:
                     soup_art = BeautifulSoup(resp_articulo.text, 'html.parser')
@@ -248,41 +249,49 @@ def scraping_cursosdev():
     except Exception as e: print(f"❌ Error CursosDev: {e}")
     return cursos
 
-# ================= LÓGICA PRINCIPAL CORREGIDA =================
+# ================= LÓGICA PRINCIPAL (CON SUPER-LOGS) =================
 def revisar_y_publicar():
     iniciar_base_datos()
     fecha_limite = datetime.now() - timedelta(days=7)
+    
+    print("\n--- 🔄 INICIANDO NUEVA RONDA DE SCRAPING EN TIEMPO REAL ---")
     
     with psycopg2.connect(DATABASE_URL) as conexion:
         with conexion.cursor() as cursor:
             
             # ----- 1. FUENTES RSS -----
             for url_feed in FUENTES_RSS:
-                print(f"🔍 Revisando RSS: {url_feed}")
+                print(f"📡 RSS ➡️ Conectando a: {url_feed}")
                 try:
                     respuesta = requests.get(url_feed, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
-                    if respuesta.status_code != 200: continue
+                    if respuesta.status_code != 200: 
+                        print(f"   ❌ Error de conexión RSS ({respuesta.status_code})")
+                        continue
                     feed = feedparser.parse(respuesta.text)
-                except: continue
+                except Exception as e: 
+                    print(f"   ❌ Error crítico al leer RSS: {e}")
+                    continue
                 
+                print(f"   📊 Encontradas {len(feed.entries)} entradas en el feed.")
                 for entrada in feed.entries[:20]:
                     if not hasattr(entrada, 'link'): continue
                     url_articulo = entrada.link
                     titulo = limpiar_html(entrada.title) if hasattr(entrada, 'title') else "Curso sin título"
                     
-                    if 'reddit.com' in url_feed and not es_espanol(titulo): continue
+                    if 'reddit.com' in url_feed and not es_espanol(titulo): 
+                        print(f"   ⏩ Ignorado por idioma (No ES): {titulo[:30]}...")
+                        continue
                     
-                    # ✅ LÓGICA CORREGIDA: Buscamos la fecha real de publicación si existe
                     cursor.execute("SELECT fecha_publicacion FROM cursos WHERE url_original = %s", (url_articulo,))
                     registro = cursor.fetchone()
                     
                     if registro:
                         fecha_registro = registro[0]
-                        # Si se publicó hace menos de 7 días, es un duplicado real y lo ignoramos
                         if fecha_registro > fecha_limite:
+                            print(f"   ⏩ Duplicado reciente (RSS): {titulo[:30]}...")
                             continue
                     
-                    print(f"🚀 Publicando desde RSS: {titulo[:40]}...")
+                    print(f"🚀 [RSS] ¡NUEVO CURSO DETECTADO!: {titulo[:40]}...")
                     mensaje = f"🎁 *NUEVO CURSO DISPONIBLE*\n\n📘 *Título:* {titulo}\n\n🔗 [VER CURSO]({url_articulo})\n\n⚠️ *Reclama el cupón rápido antes de que expire.*"
                     resultado = enviar_a_telegram(mensaje)
                     if resultado and resultado.get("ok"):
@@ -292,6 +301,7 @@ def revisar_y_publicar():
                             ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
                         """, (url_articulo, titulo, "RSS"))
                         conexion.commit()
+                        print(f"   💤 Pausa anti-spam de 30 segundos...")
                         time.sleep(30.0)
             
             # ----- 2. SCRAPING WEBS -----
@@ -303,19 +313,21 @@ def revisar_y_publicar():
             ]
             
             for nombre_fuente, funcion_scraping in fuentes_scraping:
-                print(f"\n🕷️ Ejecutando scraping en: {nombre_fuente}...")
-                for curso in funcion_scraping():
-                    
-                    # ✅ LÓGICA CORREGIDA: Verificación estricta de la ventana temporal
+                print(f"\n🕷️ WEB ➡️ Iniciando extracción en: {nombre_fuente}...")
+                cursos_encontrados = funcion_scraping()
+                print(f"   📊 {nombre_fuente} devolvió {len(cursos_encontrados)} cursos en total.")
+                
+                for curso in cursos_encontrados:
                     cursor.execute("SELECT fecha_publicacion FROM cursos WHERE url_original = %s", (curso['url'],))
                     registro = cursor.fetchone()
                     
                     if registro:
                         fecha_registro = registro[0]
                         if fecha_registro > fecha_limite:
+                            print(f"   ⏩ Duplicado reciente ({nombre_fuente}): {curso['titulo'][:30]}...")
                             continue
                     
-                    print(f"🚀 Publicando desde {nombre_fuente}: {curso['titulo'][:40]}...")
+                    print(f"🚀 [{nombre_fuente}] ¡NUEVO CURSO DETECTADO!: {curso['titulo'][:40]}...")
                     if curso['plataforma'] != "Web":
                         mensaje = f"🎁 *NUEVO CURSO GRATIS EN {curso['plataforma'].upper()}*\n\n📘 *Título:* {curso['titulo']}\n\n🔗 [ACCEDER AL CURSO GRATIS]({curso['url']})\n\n⚠️ *Cupón activo por tiempo limitado.*"
                     else:
@@ -329,15 +341,16 @@ def revisar_y_publicar():
                             ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
                         """, (curso['url'], curso['titulo'], curso['plataforma']))
                         conexion.commit()
+                        print(f"   💤 Pausa anti-spam de 30 segundos...")
                         time.sleep(30.0)
 
-    print("\n✅ Ciclo de scraping completado con éxito.")
+    print("\n✅ --- CICLO DE SCRAPING COMPLETADO CON ÉXITO ---")
 
 # ================= SERVIDOR FLASK =================
 app = Flask(__name__)
 
 @app.route('/')
-def home(): return "🤖 Bot de Cursos con Caducidad Semanal Corregido...", 200
+def home(): return "🤖 Bot de Cursos con Trazabilidad Completa Activo...", 200
 
 @app.route('/ping')
 def ping(): return "OK", 200
@@ -353,7 +366,7 @@ def bucle_scraping_infinito():
         time.sleep(600)
 
 if __name__ == "__main__":
-    print("🤖 BOT INICIADO - Lógica de Ventana de 7 Días Corregida")
+    print("🤖 BOT INICIADO - Modo Diagnóstico Verbose con Ventana de 7 Días")
     hilo = threading.Thread(target=bucle_scraping_infinito, daemon=True)
     hilo.start()
     port = int(os.environ.get("PORT", 5000))
