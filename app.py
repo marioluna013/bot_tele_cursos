@@ -168,7 +168,7 @@ def scraping_cursoteca_blog():
     return cursos
 
 def scraping_centro_educatic():
-    """Extrae cursos de Centro Educatic adaptado al nuevo HTML con búsqueda flexible por clase"""
+    """Extrae cursos de Centro Educatic con búsqueda flexible por clase"""
     cursos = []
     url_listado = "https://centro-educatic.com/public/gratis-udemy"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -177,7 +177,6 @@ def scraping_centro_educatic():
         if respuesta.status_code != 200: return []
         
         soup = BeautifulSoup(respuesta.text, 'html.parser')
-        # ✅ Corregido: Busca cualquier etiqueta (div, li, etc.) que use la clase course-card
         tarjetas = soup.find_all(True, class_='course-card')
         print(f"   📊 Tarjetas encontradas en Centro Educatic: {len(tarjetas)}")
         
@@ -193,7 +192,6 @@ def scraping_centro_educatic():
             plataforma = "Web"
             
             try:
-                # 🐢 Espera de 3 segundos para evitar bloqueos del servidor
                 time.sleep(3.0)
                 resp_articulo = requests.get(url_articulo, headers=headers, timeout=15)
                 if resp_articulo.status_code == 200:
@@ -211,7 +209,6 @@ def scraping_centro_educatic():
             
             if not enlace_real:
                 enlace_real = url_articulo
-                print("   ⚠️ No se localizó enlace directo a Udemy. Usando ficha.")
             
             cursos.append({'titulo': titulo, 'url': enlace_real, 'plataforma': plataforma})
         soup.decompose()
@@ -251,11 +248,9 @@ def scraping_cursosdev():
     except Exception as e: print(f"❌ Error CursosDev: {e}")
     return cursos
 
-# ================= LÓGICA PRINCIPAL (CON CADUCIDAD SEMANAL) =================
+# ================= LÓGICA PRINCIPAL CORREGIDA =================
 def revisar_y_publicar():
     iniciar_base_datos()
-    
-    # 🕒 Margen de repetición: 7 días atrás
     fecha_limite = datetime.now() - timedelta(days=7)
     
     with psycopg2.connect(DATABASE_URL) as conexion:
@@ -277,12 +272,15 @@ def revisar_y_publicar():
                     
                     if 'reddit.com' in url_feed and not es_espanol(titulo): continue
                     
-                    # Comprobamos si ya se publicó en los últimos 7 días
-                    cursor.execute(
-                        "SELECT id FROM cursos WHERE url_original = %s AND fecha_publicacion > %s", 
-                        (url_articulo, fecha_limite)
-                    )
-                    if cursor.fetchone(): continue
+                    # ✅ LÓGICA CORREGIDA: Buscamos la fecha real de publicación si existe
+                    cursor.execute("SELECT fecha_publicacion FROM cursos WHERE url_original = %s", (url_articulo,))
+                    registro = cursor.fetchone()
+                    
+                    if registro:
+                        fecha_registro = registro[0]
+                        # Si se publicó hace menos de 7 días, es un duplicado real y lo ignoramos
+                        if fecha_registro > fecha_limite:
+                            continue
                     
                     print(f"🚀 Publicando desde RSS: {titulo[:40]}...")
                     mensaje = f"🎁 *NUEVO CURSO DISPONIBLE*\n\n📘 *Título:* {titulo}\n\n🔗 [VER CURSO]({url_articulo})\n\n⚠️ *Reclama el cupón rápido antes de que expire.*"
@@ -294,7 +292,6 @@ def revisar_y_publicar():
                             ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
                         """, (url_articulo, titulo, "RSS"))
                         conexion.commit()
-                        # 🕒 Pausa de 30 segundos entre cursos para evitar ráfagas masivas
                         time.sleep(30.0)
             
             # ----- 2. SCRAPING WEBS -----
@@ -308,11 +305,15 @@ def revisar_y_publicar():
             for nombre_fuente, funcion_scraping in fuentes_scraping:
                 print(f"\n🕷️ Ejecutando scraping en: {nombre_fuente}...")
                 for curso in funcion_scraping():
-                    cursor.execute(
-                        "SELECT id FROM cursos WHERE url_original = %s AND fecha_publicacion > %s", 
-                        (curso['url'], fecha_limite)
-                    )
-                    if cursor.fetchone(): continue
+                    
+                    # ✅ LÓGICA CORREGIDA: Verificación estricta de la ventana temporal
+                    cursor.execute("SELECT fecha_publicacion FROM cursos WHERE url_original = %s", (curso['url'],))
+                    registro = cursor.fetchone()
+                    
+                    if registro:
+                        fecha_registro = registro[0]
+                        if fecha_registro > fecha_limite:
+                            continue
                     
                     print(f"🚀 Publicando desde {nombre_fuente}: {curso['titulo'][:40]}...")
                     if curso['plataforma'] != "Web":
@@ -328,7 +329,6 @@ def revisar_y_publicar():
                             ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
                         """, (curso['url'], curso['titulo'], curso['plataforma']))
                         conexion.commit()
-                        # 🕒 Pausa de 30 segundos entre cursos para evitar ráfagas masivas
                         time.sleep(30.0)
 
     print("\n✅ Ciclo de scraping completado con éxito.")
@@ -337,7 +337,7 @@ def revisar_y_publicar():
 app = Flask(__name__)
 
 @app.route('/')
-def home(): return "🤖 Bot de Cursos con Caducidad Semanal y Anti-Spam Activo...", 200
+def home(): return "🤖 Bot de Cursos con Caducidad Semanal Corregido...", 200
 
 @app.route('/ping')
 def ping(): return "OK", 200
@@ -353,7 +353,7 @@ def bucle_scraping_infinito():
         time.sleep(600)
 
 if __name__ == "__main__":
-    print("🤖 BOT INICIADO - Configuración con Ventana de 7 Días y Publicación Espaciada (30s)")
+    print("🤖 BOT INICIADO - Lógica de Ventana de 7 Días Corregida")
     hilo = threading.Thread(target=bucle_scraping_infinito, daemon=True)
     hilo.start()
     port = int(os.environ.get("PORT", 5000))
