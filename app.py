@@ -248,7 +248,7 @@ def scraping_cursosdev():
     except Exception as e: print(f"❌ Error CursosDev: {e}", flush=True)
     return cursos
 
-# ================= LÓGICA PRINCIPAL (PROTEGIDA CONTRA TIPOS) =================
+# ================= LÓGICA PRINCIPAL (CON LAS CORRECCIONES DE HOY) =================
 def revisar_y_publicar():
     iniciar_base_datos()
     fecha_limite = datetime.now() - timedelta(days=7)
@@ -262,7 +262,13 @@ def revisar_y_publicar():
             for url_feed in FUENTES_RSS:
                 print(f"📡 RSS ➡️ Conectando a: {url_feed}", flush=True)
                 try:
-                    respuesta = requests.get(url_feed, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+                    # ✅ Modificado: Cabeceras realistas de simulación humana para burlar el 403 de Reddit
+                    headers_rss = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3'
+                    }
+                    respuesta = requests.get(url_feed, headers=headers_rss, timeout=15)
                     if respuesta.status_code != 200: 
                         print(f"   ❌ Error de conexión RSS ({respuesta.status_code})", flush=True)
                         continue
@@ -286,12 +292,12 @@ def revisar_y_publicar():
                     
                     if registro:
                         fecha_registro = registro[0]
-                        # 🔐 PROTECCIÓN: Si viene como texto (String), lo convertimos a Datetime
+                        # ✅ Conversor de seguridad si la fecha guardada viene como String
                         if isinstance(fecha_registro, str):
                             try:
                                 fecha_registro = datetime.strptime(fecha_registro.split(".")[0], "%Y-%m-%d %H:%M:%S")
                             except:
-                                fecha_registro = datetime.now() - timedelta(days=10) # Forzado a pasar filtro si falla
+                                fecha_registro = datetime.now() - timedelta(days=10)
                         
                         if fecha_registro > fecha_limite:
                             print(f"   ⏩ Duplicado reciente (RSS): {titulo[:30]}...", flush=True)
@@ -307,8 +313,9 @@ def revisar_y_publicar():
                             ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
                         """, (url_articulo, titulo, "RSS"))
                         conexion.commit()
-                        print(f"   💤 Pausa anti-spam de 30 segundos...", flush=True)
-                        time.sleep(30.0)
+                        # ✅ Modificado: Reducido a 5 segundos de cortesía
+                        print(f"   💤 Pausa anti-spam de 5 segundos...", flush=True)
+                        time.sleep(5.0)
             
             # ----- 2. SCRAPING WEBS -----
             fuentes_scraping = [
@@ -329,7 +336,7 @@ def revisar_y_publicar():
                     
                     if registro:
                         fecha_registro = registro[0]
-                        # 🔐 PROTECCIÓN: Si viene como texto (String), lo convertimos a Datetime
+                        # ✅ Conversor de seguridad si la fecha guardada viene como String
                         if isinstance(fecha_registro, str):
                             try:
                                 fecha_registro = datetime.strptime(fecha_registro.split(".")[0], "%Y-%m-%d %H:%M:%S")
@@ -354,8 +361,9 @@ def revisar_y_publicar():
                             ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
                         """, (curso['url'], curso['titulo'], curso['plataforma']))
                         conexion.commit()
-                        print(f"   💤 Pausa anti-spam de 30 segundos...", flush=True)
-                        time.sleep(30.0)
+                        # ✅ Modificado: Reducido a 5 segundos de cortesía
+                        print(f"   💤 Pausa anti-spam de 5 segundos...", flush=True)
+                        time.sleep(5.0)
 
     print("\n✅ --- CICLO DE SCRAPING COMPLETADO CON ÉXITO ---", flush=True)
 
