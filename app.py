@@ -21,9 +21,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 FUENTES_RSS = [
     "https://facialix.com/feed/",
-    "https://www.reddit.com/r/udemyfreebies/.rss",
-    "https://www.reddit.com/r/udemyfreecourses/.rss",
-    "https://www.reddit.com/r/FreeUdemyCoupons/.rss",
+    "https://redlib.catsarch.com/r/udemyfreebies/.rss",
+    "https://redlib.catsarch.com/r/udemyfreecourses/.rss",
+    "https://redlib.catsarch.com/r/FreeUdemyCoupons/.rss",
 ]
 
 PLATAFORMAS = [
