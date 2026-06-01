@@ -19,11 +19,9 @@ TOKEN_TELEGRAM = os.getenv("TELEGRAM_TOKEN")
 ID_CANAL = os.getenv("TELEGRAM_CHANNEL_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Mantenemos las fuentes web limpias y Facialix en el RSS
 FUENTES_RSS = [
     "https://facialix.com/feed/",
-    "https://redlib.catsarch.com/r/udemyfreebies/.rss",
-    "https://redlib.catsarch.com/r/udemyfreecourses/.rss",
-    "https://redlib.catsarch.com/r/FreeUdemyCoupons/.rss",
 ]
 
 PLATAFORMAS = [
@@ -178,7 +176,6 @@ def scraping_centro_educatic():
         
         soup = BeautifulSoup(respuesta.text, 'html.parser')
         tarjetas = soup.find_all(True, class_='course-card')
-        print(f"   📊 Tarjetas encontradas en Centro Educatic: {len(tarjetas)}", flush=True)
         
         for card in tarjetas:
             enlace_tag = card.find('a', class_='course-link')
@@ -187,12 +184,11 @@ def scraping_centro_educatic():
             url_articulo = urljoin(url_listado, enlace_tag['href'])
             titulo = limpiar_html(enlace_tag.get_text())
             
-            print(f"   🔍 Analizando ficha: {titulo[:30]}...", flush=True)
             enlace_real = None
             plataforma = "Web"
             
             try:
-                time.sleep(3.0)  # Pausa prudencial para evitar bloqueos
+                time.sleep(3.0)  # Pausa prudencial anti-bloqueo
                 resp_articulo = requests.get(url_articulo, headers=headers, timeout=15)
                 if resp_articulo.status_code == 200:
                     soup_art = BeautifulSoup(resp_articulo.text, 'html.parser')
@@ -205,7 +201,7 @@ def scraping_centro_educatic():
                         if enlace_real: break
                     soup_art.decompose()
             except Exception as e:
-                print(f"   ⚠️ Error en ficha interna: {e}", flush=True)
+                print(f"   ⚠️ Error en ficha interna Centro Educatic: {e}", flush=True)
             
             if not enlace_real:
                 enlace_real = url_articulo
@@ -248,7 +244,7 @@ def scraping_cursosdev():
     except Exception as e: print(f"❌ Error CursosDev: {e}", flush=True)
     return cursos
 
-# ================= LÓGICA PRINCIPAL (CON LAS CORRECCIONES DE HOY) =================
+# ================= LÓGICA PRINCIPAL OPTIMIZADA =================
 def revisar_y_publicar():
     iniciar_base_datos()
     fecha_limite = datetime.now() - timedelta(days=7)
@@ -262,13 +258,7 @@ def revisar_y_publicar():
             for url_feed in FUENTES_RSS:
                 print(f"📡 RSS ➡️ Conectando a: {url_feed}", flush=True)
                 try:
-                    # ✅ Modificado: Cabeceras realistas de simulación humana para burlar el 403 de Reddit
-                    headers_rss = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                        'Accept-Language': 'es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3'
-                    }
-                    respuesta = requests.get(url_feed, headers=headers_rss, timeout=15)
+                    respuesta = requests.get(url_feed, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
                     if respuesta.status_code != 200: 
                         print(f"   ❌ Error de conexión RSS ({respuesta.status_code})", flush=True)
                         continue
@@ -283,16 +273,11 @@ def revisar_y_publicar():
                     url_articulo = entrada.link
                     titulo = limpiar_html(entrada.title) if hasattr(entrada, 'title') else "Curso sin título"
                     
-                    if 'reddit.com' in url_feed and not es_espanol(titulo): 
-                        print(f"   ⏩ Ignorado por idioma (No ES): {titulo[:30]}...", flush=True)
-                        continue
-                    
                     cursor.execute("SELECT fecha_publicacion FROM cursos WHERE url_original = %s", (url_articulo,))
                     registro = cursor.fetchone()
                     
                     if registro:
                         fecha_registro = registro[0]
-                        # ✅ Conversor de seguridad si la fecha guardada viene como String
                         if isinstance(fecha_registro, str):
                             try:
                                 fecha_registro = datetime.strptime(fecha_registro.split(".")[0], "%Y-%m-%d %H:%M:%S")
@@ -300,7 +285,7 @@ def revisar_y_publicar():
                                 fecha_registro = datetime.now() - timedelta(days=10)
                         
                         if fecha_registro > fecha_limite:
-                            print(f"   ⏩ Duplicado reciente (RSS): {titulo[:30]}...", flush=True)
+                            # Quitamos el print individual de duplicado para aligerar la consola
                             continue
                     
                     print(f"🚀 [RSS] ¡NUEVO CURSO DETECTADO!: {titulo[:40]}...", flush=True)
@@ -313,7 +298,6 @@ def revisar_y_publicar():
                             ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
                         """, (url_articulo, titulo, "RSS"))
                         conexion.commit()
-                        # ✅ Modificado: Reducido a 5 segundos de cortesía
                         print(f"   💤 Pausa anti-spam de 5 segundos...", flush=True)
                         time.sleep(5.0)
             
@@ -326,9 +310,9 @@ def revisar_y_publicar():
             ]
             
             for nombre_fuente, funcion_scraping in fuentes_scraping:
-                print(f"\n🕷️ WEB ➡️ Iniciando extracción en: {nombre_fuente}...", flush=True)
+                print(f"🕷️ WEB ➡️ Iniciando extracción en: {nombre_fuente}...", flush=True)
                 cursos_encontrados = funcion_scraping()
-                print(f"   📊 {nombre_fuente} devolvió {len(cursos_encontrados)} cursos en total.", flush=True)
+                print(f"   Análisis: {nombre_fuente} devolvió {len(cursos_encontrados)} cursos.", flush=True)
                 
                 for curso in cursos_encontrados:
                     cursor.execute("SELECT fecha_publicacion FROM cursos WHERE url_original = %s", (curso['url'],))
@@ -336,7 +320,6 @@ def revisar_y_publicar():
                     
                     if registro:
                         fecha_registro = registro[0]
-                        # ✅ Conversor de seguridad si la fecha guardada viene como String
                         if isinstance(fecha_registro, str):
                             try:
                                 fecha_registro = datetime.strptime(fecha_registro.split(".")[0], "%Y-%m-%d %H:%M:%S")
@@ -344,7 +327,7 @@ def revisar_y_publicar():
                                 fecha_registro = datetime.now() - timedelta(days=10)
                                 
                         if fecha_registro > fecha_limite:
-                            print(f"   ⏩ Duplicado reciente ({nombre_fuente}): {curso['titulo'][:30]}...", flush=True)
+                            # En silencio si ya existe, limpiando la salida de Flask
                             continue
                     
                     print(f"🚀 [{nombre_fuente}] ¡NUEVO CURSO DETECTADO!: {curso['titulo'][:40]}...", flush=True)
@@ -361,17 +344,16 @@ def revisar_y_publicar():
                             ON CONFLICT (url_original) DO UPDATE SET fecha_publicacion = NOW()
                         """, (curso['url'], curso['titulo'], curso['plataforma']))
                         conexion.commit()
-                        # ✅ Modificado: Reducido a 5 segundos de cortesía
                         print(f"   💤 Pausa anti-spam de 5 segundos...", flush=True)
                         time.sleep(5.0)
 
-    print("\n✅ --- CICLO DE SCRAPING COMPLETADO CON ÉXITO ---", flush=True)
+    print("✅ --- CICLO DE SCRAPING COMPLETADO CON ÉXITO ---", flush=True)
 
 # ================= SERVIDOR FLASK =================
 app = Flask(__name__)
 
 @app.route('/')
-def home(): return "🤖 Bot de Cursos con Trazabilidad Completa Activo...", 200
+def home(): return "🤖 Bot de Cursos con Trazabilidad Optimizada...", 200
 
 @app.route('/ping')
 def ping(): return "OK", 200
@@ -387,7 +369,7 @@ def bucle_scraping_infinito():
         time.sleep(600)
 
 if __name__ == "__main__":
-    print("🤖 BOT INICIADO - Forzado de Vaciado de Consola NATIVO (Flush=True)", flush=True)
+    print("🤖 BOT INICIADO - Configuración Equilibrada para Logs y Cron-Job", flush=True)
     hilo = threading.Thread(target=bucle_scraping_infinito, daemon=True)
     hilo.start()
     port = int(os.environ.get("PORT", 5000))
